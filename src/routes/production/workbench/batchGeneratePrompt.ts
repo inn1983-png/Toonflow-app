@@ -26,6 +26,38 @@ export default router.post(
   async (req, res) => {
     const { projectId, trackData, model } = req.body;
 
+    async function appendStoryboardAssociatedAssets(assets: any[], storyboard: any[]) {
+      const existingAssetIds = new Set(assets.map((item) => item.id).filter(Boolean));
+      const associateAssetIds = [
+        ...new Set(
+          storyboard
+            .flatMap((item) => item.associateAssetsIds || [])
+            .filter((id) => id != null && !existingAssetIds.has(id)),
+        ),
+      ];
+
+      if (!associateAssetIds.length) return assets;
+
+      const rows = await u
+        .db("o_assets")
+        .leftJoin("o_image", "o_image.id", "o_assets.imageId")
+        .whereIn("o_assets.id", associateAssetIds)
+        .select("o_assets.id", "o_assets.type", "o_assets.name", "o_assets.prompt", "o_assets.describe", "o_image.filePath");
+
+      for (const row of rows) {
+        assets.push({
+          id: row.id,
+          type: row.type,
+          name: row.name,
+          prompt: row.prompt,
+          describe: row.describe,
+          filePath: row.filePath,
+        });
+      }
+
+      return assets;
+    }
+
     async function buildData(info: Array<{ id: number; sources: string }>) {
       const images = await Promise.all(
         info.map(async (item: { id: number; sources: string }) => {
@@ -85,6 +117,7 @@ export default router.post(
             shouldGenerateImage: item.shouldGenerateImage,
           });
       }
+      await appendStoryboardAssociatedAssets(assets, storyboard);
       return { assets, storyboard };
     }
 
