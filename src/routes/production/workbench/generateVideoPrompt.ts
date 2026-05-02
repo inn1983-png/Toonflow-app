@@ -5,6 +5,7 @@ import { success, error } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 import fs from "fs/promises";
 import path from "path";
+import { buildLtx23FourGridPrompt, isLtx23FourGridModel } from "@/utils/ltx23FourGridPrompt";
 const router = express.Router();
 
 export default router.post(
@@ -49,7 +50,7 @@ export default router.post(
             .db("o_assets")
             .leftJoin("o_image", "o_image.id", "o_assets.imageId")
             .where("o_assets.id", item.id)
-            .select("o_assets.id", "o_assets.type", "o_assets.name", "o_image.filePath")
+            .select("o_assets.id", "o_assets.type", "o_assets.name", "o_assets.prompt", "o_assets.describe", "o_image.filePath")
             .first();
           return {
             ...assetsData,
@@ -69,6 +70,8 @@ export default router.post(
           id: item.id,
           type: item.type,
           name: item.name,
+          prompt: item.prompt,
+          describe: item.describe,
           filePath: item.filePath,
         });
       if (item._type === "storyboard")
@@ -95,6 +98,19 @@ export default router.post(
     });
 
     const [id, modelData] = model.split(/:(.+)/);
+
+    if (isLtx23FourGridModel(model)) {
+      const text = buildLtx23FourGridPrompt({
+        assets,
+        storyboard,
+        duration: storyboard[0]?.duration,
+      });
+      await u.db("o_videoTrack").where({ id: trackId }).update({
+        prompt: text,
+      });
+      return res.status(200).send(success(text));
+    }
+
     const projectData = await u.db("o_project").select("*").where({ id: projectId }).first();
     const videoPrompt = await u.db("o_prompt").where("type", "videoPromptGeneration").first();
     let videoPromptGeneration = "" as string | undefined;
@@ -151,7 +167,6 @@ export default router.post(
     }
 
     const artStyle = projectData?.artStyle || "无";
-          console.log("%c Line:158 🍢", "background:#ffdd4d",assets);
 
     const visualManual = u.getArtPrompt(artStyle, "art_skills", "art_storyboard_video");
     const content = `
@@ -159,7 +174,7 @@ export default router.post(
 
           **资产信息**（角色、场景、道具、音频):${assets
             .filter((i) => i.filePath)
-            .map((i) => `[${i.id},${i.type},${i.name} ${assetsAudioRecord[i.id] ? `audio:${assetsAudioRecord[i.id]}` : ""} ] `)
+            .map((i) => `[${i.id},${i.type},${i.name} ${i.prompt ? `prompt:${i.prompt}` : ""} ${i.describe ? `describe:${i.describe}` : ""} ${assetsAudioRecord[i.id] ? `audio:${assetsAudioRecord[i.id]}` : ""} ] `)
             .join("，")},
           **分镜信息**：${storyboard.map(
             (i) => `<storyboardItem
@@ -168,7 +183,6 @@ export default router.post(
 ></storyboardItem>`,
           )},
           `;
-    console.log("%c Line:156 🍬 content", "background:#4fff4B", content);
 
     try {
       const { text } = await u.Ai.Text("universalAi").invoke({
