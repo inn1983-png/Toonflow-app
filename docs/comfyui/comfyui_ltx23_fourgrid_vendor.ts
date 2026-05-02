@@ -441,7 +441,7 @@ async function waitHistory(promptId) {
 
       if (!data) return { completed: false };
 
-      if (data.status && (data.status.status_str === "error" || data.status.completed === false && data.status.messages)) {
+      if (data.status && (data.status.status_str === "error" || (data.status.completed === false && data.status.messages))) {
         const message = JSON.stringify(data.status);
         if (message.includes("error")) return { completed: false, error: message };
       }
@@ -507,15 +507,7 @@ async function downloadOutputFile(file) {
 }
 
 function buildPrompt(input) {
-  const base = String(input.prompt || "").trim();
-  return [
-    base,
-    "四宫格图生视频，严格按照左上、右上、左下、右下四张画面顺序推进。",
-    "镜头之间使用硬切，不要叠化，不要融化，不要转场特效。",
-    "保持人物身份、服装、场景、光源一致，动作稳定自然，古风电影级写实质感。",
-  ]
-    .filter(Boolean)
-    .join("\n");
+  return String(input.prompt || "").trim() || "根据四宫格图片顺序生成稳定连贯的古风短剧视频。";
 }
 
 exports.videoRequest = async function videoRequest(input, model) {
