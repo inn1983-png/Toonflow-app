@@ -1,131 +1,104 @@
 # LTX2.3 四宫格剧情视频提示词写法
 
-这个工作流的核心不是普通图生视频提示词，而是把一张四宫格图当作 4 个关键帧：
+这个工作流已经内置“看四宫格图片 + 根据提示词反推 JSON 视频提示词”的逻辑。
 
-```text
-左上 = 第 1 帧
-右上 = 第 2 帧
-左下 = 第 3 帧
-右下 = 第 4 帧
-```
-
-所以 Toonflow 传给 ComfyUI 的视频提示词，应该写成“4 帧导演指令”，不要只写一句：
-
-```text
-一个古代男人在房间里说话，镜头缓慢推进。
-```
-
-这种写法太散，LTX2.3 不知道四宫格每一格之间怎么动。
+所以 Toonflow 不应该再传复杂 JSON，也不应该把四帧拆成完整 JSON。Toonflow 只需要传一段**简单、清楚、克制的剧情/动作提示词**，让工作流内部的反推节点去生成最终 JSON。
 
 ---
 
-## 推荐结构
+## 正确理解
+
+```text
+Toonflow 传入：四宫格图片 + 简单剧情提示
+        ↓
+工作流内部：视觉理解四宫格图片
+        ↓
+工作流内部：反推出 JSON 格式视频控制提示词
+        ↓
+LTX2.3：根据反推结果生成视频
+```
+
+所以 Toonflow 这边的提示词目标不是“写完整视频 JSON”，而是给反推节点一个清楚的剧情方向。
+
+---
+
+## Toonflow 应该传什么
+
+推荐格式：
+
+```text
+古风短剧，写实电影感。
+请根据四宫格图片顺序生成 12 秒剧情视频。
+人物保持同一身份、同一服装、同一场景、同一光源。
+剧情重点：张捕头站在昏暗衙门里，先压着怒气听完对方羞辱，随后抬眼冷笑，缓慢握紧腰牌，最后转身离开，情绪从隐忍到决绝。
+动作要求：小幅度动作，眼神、转头、握手、衣袖轻动为主，不要大幅打斗。
+镜头要求：稳定镜头，轻微推进，真实电视剧质感。
+禁止：字幕、文字、水印、现代物品、突然换脸、突然换衣服、突然换场景、额外人物。
+```
+
+---
+
+## 更短的通用模板
+
+```text
+古风短剧，写实电影感。根据四宫格图片顺序生成 12 秒剧情视频。
+保持人物身份、服装、场景、光源一致。
+剧情重点：[这里写这一段视频要表达的剧情动作和情绪变化]
+动作以眼神、转头、手部动作、衣袖轻动为主，不要大幅动作。
+镜头稳定，轻微推进，不要字幕、文字、水印，不要换脸、换衣服、换场景、额外人物。
+```
+
+---
+
+## 不推荐写法
+
+不要传这种复杂 JSON：
 
 ```json
 {
-  "video_type": "four_grid_story_video",
-  "duration": "12s",
-  "frame_order": "top_left -> top_right -> bottom_left -> bottom_right",
-  "global_rules": {
-    "style": "Chinese historical drama, realistic cinematic look, natural lighting, stable identity",
-    "continuity": "same characters, same costumes, same scene, same light direction, no sudden identity change",
-    "transition": "hard cut between the four keyframes, no dissolve, no morphing, no fantasy transition",
-    "camera": "stable camera, slow cinematic movement, no extreme shake, no random zoom",
-    "text_rule": "no subtitles, no captions, no written text, no watermark"
-  },
-  "shots": [
-    {
-      "frame": 1,
-      "reference_position": "top_left",
-      "duration": "0-3s",
-      "camera": "medium shot, eye-level, slight push in",
-      "action": "角色保持当前姿势，缓慢抬眼，情绪压抑",
-      "dialogue_sync": "如果有台词，只做轻微口型，不夸张张嘴",
-      "motion": "small head movement, subtle breathing, robe moves slightly"
-    },
-    {
-      "frame": 2,
-      "reference_position": "top_right",
-      "duration": "3-6s",
-      "camera": "medium close-up, stable framing",
-      "action": "角色转头看向对方，表情变冷",
-      "dialogue_sync": "mouth moves naturally as speaking",
-      "motion": "slow turn, controlled facial expression, no extra body movement"
-    },
-    {
-      "frame": 3,
-      "reference_position": "bottom_left",
-      "duration": "6-9s",
-      "camera": "close-up, slight push in",
-      "action": "角色握紧手，眼神坚定",
-      "dialogue_sync": "short sentence, restrained lip movement",
-      "motion": "hand tightens, sleeves move gently"
-    },
-    {
-      "frame": 4,
-      "reference_position": "bottom_right",
-      "duration": "9-12s",
-      "camera": "medium shot, hold final composition",
-      "action": "角色做出最终决定，画面停在情绪最高点",
-      "dialogue_sync": "final line ends before the last second",
-      "motion": "slow pause, stable ending, no new characters"
-    }
-  ],
-  "negative": "cartoon, anime, 3d render, game style, modern objects, subtitles, captions, watermark, logo, random text, extra people, identity change, face change, clothing change, scene change, camera shake, fast zoom, melting transition, morphing, blurry, low quality"
+  "shot_1": {},
+  "shot_2": {},
+  "shot_3": {},
+  "shot_4": {}
 }
 ```
 
----
+原因：这个工作流自己已经会反推 JSON，外部再塞 JSON 容易造成两层指令冲突。
 
-## Toonflow 自动生成时的简化模板
-
-如果 Toonflow 只有一段 `prompt`，建议自动包装成下面格式：
+也不要只写一句太空的：
 
 ```text
-Use the uploaded four-grid storyboard image as four ordered keyframes.
-Frame order: top-left -> top-right -> bottom-left -> bottom-right.
-Generate a 12-second Chinese historical drama video.
+让人物动起来，生成一个古风视频。
+```
 
-Global rules:
-- Keep the same characters, same faces, same costumes, same scene, same lighting.
-- Follow the visual content of each grid strictly.
-- Use hard cuts or very short natural motion between the four keyframes.
-- No morphing, no dissolve, no fantasy transition, no random camera movement.
-- No subtitles, no captions, no text, no watermark.
+原因：剧情方向太弱，反推节点不知道动作和情绪重点。
 
-Shot 1, 0-3s, top-left:
-[写第一格动作]
-Camera: stable medium shot, slight push in.
-Motion: subtle breathing, small eye movement, natural robe movement.
+---
 
-Shot 2, 3-6s, top-right:
-[写第二格动作]
-Camera: medium close-up, eye-level.
-Motion: slow head turn, controlled facial expression.
+## 最适合 Toonflow 自动拼接的提示词结构
 
-Shot 3, 6-9s, bottom-left:
-[写第三格动作]
-Camera: close-up, slight push in.
-Motion: hand movement, restrained body movement.
+Toonflow 视频节点的 `prompt` 建议由这几部分组成：
 
-Shot 4, 9-12s, bottom-right:
-[写第四格动作]
-Camera: hold final composition.
-Motion: slow pause, stable ending.
-
-Story intent:
-[原始 Toonflow 视频描述]
+```text
+风格：古风短剧，写实电影感。
+任务：根据四宫格图片顺序生成 12 秒剧情视频。
+连续性：人物身份、服装、场景、光源保持一致。
+剧情重点：[分镜视频描述]
+动作限制：小动作，眼神、转头、手部、衣袖轻动为主。
+镜头限制：稳定镜头，轻微推进，不要乱切、乱转、乱变焦。
+禁止内容：字幕、文字、水印、现代物品、换脸、换衣服、换场景、额外人物。
 ```
 
 ---
 
-## 最重要的 5 条
+## 关键规则
 
-1. 每格都要写清楚：动作、镜头、情绪。
-2. 不要写大动作，LTX2.3 更适合小动作。
-3. 不要让它自己补剧情，要让它严格跟四宫格。
-4. 不要写“镜头快速移动、激烈打斗、复杂转场”。
-5. 视频阶段不要再塞角色图、场景图、道具图；只塞最终四宫格图。
+1. 不要给 JSON。
+2. 不要逐帧写太复杂。
+3. 要写清楚“这一段视频的剧情重点”。
+4. 要限制动作为小动作。
+5. 要强调不换脸、不换衣服、不换场景、不加人。
+6. 视频阶段只传最终四宫格图，不要再传角色图、场景图、道具图。
 
 ---
 
