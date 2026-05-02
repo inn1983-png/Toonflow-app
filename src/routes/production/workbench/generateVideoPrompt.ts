@@ -8,6 +8,38 @@ import path from "path";
 import { buildLtx23FourGridPrompt, isLtx23FourGridModel } from "@/utils/ltx23FourGridPrompt";
 const router = express.Router();
 
+async function appendStoryboardAssociatedAssets(assets: any[], storyboard: any[]) {
+  const existingAssetIds = new Set(assets.map((item) => item.id).filter(Boolean));
+  const associateAssetIds = [
+    ...new Set(
+      storyboard
+        .flatMap((item) => item.associateAssetsIds || [])
+        .filter((id) => id != null && !existingAssetIds.has(id)),
+    ),
+  ];
+
+  if (!associateAssetIds.length) return assets;
+
+  const rows = await u
+    .db("o_assets")
+    .leftJoin("o_image", "o_image.id", "o_assets.imageId")
+    .whereIn("o_assets.id", associateAssetIds)
+    .select("o_assets.id", "o_assets.type", "o_assets.name", "o_assets.prompt", "o_assets.describe", "o_image.filePath");
+
+  for (const row of rows) {
+    assets.push({
+      id: row.id,
+      type: row.type,
+      name: row.name,
+      prompt: row.prompt,
+      describe: row.describe,
+      filePath: row.filePath,
+    });
+  }
+
+  return assets;
+}
+
 export default router.post(
   "/",
   validateFields({
@@ -84,13 +116,18 @@ export default router.post(
           shouldGenerateImage: item.shouldGenerateImage,
         });
     }
+
+    await appendStoryboardAssociatedAssets(assets, storyboard);
+
     const assetsNotAudioIds = assets.filter((i) => i.type == "audio").map((i) => i.id);
 
-    const assets2Audio = await u
-      .db("o_assets")
-      .whereIn("o_assets.id", assetsNotAudioIds)
-      .join("o_assetsRole2Audio", "o_assetsRole2Audio.assetsAudioId", "o_assets.assetsId")
-      .select("o_assets.assetsId", "o_assets.id", "o_assetsRole2Audio.assetsAudioId", "o_assetsRole2Audio.assetsRoleId");
+    const assets2Audio = assetsNotAudioIds.length
+      ? await u
+          .db("o_assets")
+          .whereIn("o_assets.id", assetsNotAudioIds)
+          .join("o_assetsRole2Audio", "o_assetsRole2Audio.assetsAudioId", "o_assets.assetsId")
+          .select("o_assets.assetsId", "o_assets.id", "o_assetsRole2Audio.assetsAudioId", "o_assetsRole2Audio.assetsRoleId")
+      : [];
 
     const assetsAudioRecord: Record<number, number> = {};
     assets2Audio.forEach((i) => {
