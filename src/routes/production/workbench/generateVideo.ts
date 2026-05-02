@@ -5,6 +5,7 @@ import { v4 as uuidv4 } from "uuid";
 import { success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 import { ReferenceList } from "@/utils/ai";
+import { isLtx23FourGridModel } from "@/utils/ltx23FourGridPrompt";
 const router = express.Router();
 
 type Type = "imageReference" | "startImage" | "endImage" | "videoReference" | "audioReference";
@@ -49,9 +50,13 @@ export default router.post(
     //获取生成视频比例
     const ratio = await u.db("o_project").select("videoRatio").where("id", projectId).first();
     const videoPath = `/${projectId}/video/${uuidv4()}.mp4`; //视频保存路径
+    const effectiveUploadData = isLtx23FourGridModel(model)
+      ? uploadData.filter((item: UploadItem) => item.sources === "storyboard").slice(0, 1)
+      : uploadData;
+
     //查询出图片数据
     const images = await Promise.all(
-      uploadData.map(async (item: UploadItem) => {
+      effectiveUploadData.map(async (item: UploadItem) => {
         if (item.sources === "storyboard") {
           const filePath = await u.db("o_storyboard").where("id", item.id).select("filePath").first();
           return { path: filePath?.filePath, sources: "storyBoard" };
@@ -70,7 +75,7 @@ export default router.post(
     //把images里面的图片转成base64格式
     const base64 = await Promise.all(
       images.map(async (item) => {
-        if (!item) return null;
+        if (!item?.path) return null;
         return { base64: await u.oss.getImageBase64(item.path), type: item.sources == "audio" ? "audio" : "image" };
       }),
     );
@@ -89,6 +94,8 @@ export default router.post(
       videoId,
       scriptId,
       type: "视频",
+      model,
+      referencePolicy: isLtx23FourGridModel(model) ? "ltx23_fourgrid_storyboard_only" : "default",
     };
     const aiVideo = u.Ai.Video(model);
     aiVideo
