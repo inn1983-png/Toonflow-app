@@ -1,6 +1,8 @@
 import { generateText, streamText, wrapLanguageModel, stepCountIs, extractReasoningMiddleware } from "ai";
 import { devToolsMiddleware } from "@ai-sdk/devtools";
 import axios from "axios";
+import nodePath from "node:path";
+import sharp from "sharp";
 import { transform } from "sucrase";
 import u from "@/utils";
 
@@ -164,15 +166,34 @@ async function withTaskRecord<T>(
 async function urlToBase64(url: string, retries = 3, delay = 1000): Promise<string> {
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
-      const res = await axios.get(url, { responseType: "arraybuffer" });
+      const res = await axios.get(url, { responseType: "arraybuffer", maxBodyLength: Infinity, maxContentLength: Infinity });
+      const mime = String(res.headers["content-type"] || "application/octet-stream").split(";")[0].trim();
       const base64 = Buffer.from(res.data).toString("base64");
-      return `${base64}`;
+      return `data:${mime};base64,${base64}`;
     } catch (e) {
       if (attempt === retries) throw e;
       await new Promise((resolve) => setTimeout(resolve, delay * attempt));
     }
   }
   throw new Error("urlToBase64 failed");
+}
+
+async function normalizeGeneratedMedia(result: unknown): Promise<string> {
+  if (typeof result !== "string") {
+    throw new Error("生成结果格式错误：供应商未返回图片或媒体字符串");
+  }
+
+  const value = result.trim();
+  if (!value) throw new Error("生成结果为空");
+  if (/^https?:\/\//i.test(value)) return await urlToBase64(value);
+  return value;
+}
+
+function base64ResultToBuffer(result: string): Buffer {
+  const base64 = result.replace(/^data:[^;]+;base64,/i, "").trim();
+  const buffer = Buffer.from(base64, "base64");
+  if (!buffer.length) throw new Error("生成结果为空，无法保存");
+  return buffer;
 }
 class AiText {
   private AiType: AiType | `${string}:${string}`;
@@ -254,8 +275,7 @@ class AiImage {
     const exec = async (mn: `${string}:${string}`) => {
       const fn = await getVendorTemplateFn("imageRequest", mn);
       await referenceList2imageBase642(mn.split(/:(.+)/)[0], input);
-      this.result = await fn(input);
-      if (this.result.startsWith("http")) this.result = await urlToBase64(this.result);
+      this.result = await normalizeGeneratedMedia(await fn(input));
       return this;
     };
     if (taskRecord) {
@@ -265,8 +285,30 @@ class AiImage {
     await exec(modelName);
     return this;
   }
-  async save(path: string) {
-    await u.oss.writeFile(path, this.result);
+  async save(filePath: string) {
+    const ext = nodePath.extname(filePath).toLowerCase();
+    const imageExts = new Set([".jpg", ".jpeg", ".png", ".webp"]);
+    if (!imageExts.has(ext)) {
+      await u.oss.writeFile(filePath, this.result);
+      return this;
+    }
+
+    try {
+      const buffer = base64ResultToBuffer(this.result);
+      const image = sharp(buffer).rotate();
+      let output: Buffer;
+      if (ext === ".png") {
+        output = await image.png().toBuffer();
+      } else if (ext === ".webp") {
+        output = await image.webp({ quality: 95 }).toBuffer();
+      } else {
+        output = await image.jpeg({ quality: 95 }).toBuffer();
+      }
+      await u.oss.writeFile(filePath, output);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      throw new Error(`图片保存失败：${message}`);
+    }
     return this;
   }
 }
@@ -302,9 +344,7 @@ class AiVideo {
         const fn = await getVendorTemplateFn("videoRequest", mn);
         await referenceList2imageBase642(mn.split(/:(.+)/)[0], input);
 
-        this.result = await fn(input);
-
-        if (this.result.startsWith("http")) this.result = await urlToBase64(this.result);
+        this.result = await normalizeGeneratedMedia(await fn(input));
       };
       if (taskRecord) {
         await withTaskRecord(this.key, taskRecord.taskClass, taskRecord.describe, taskRecord.relatedObjects, taskRecord.projectId, exec);
@@ -333,9 +373,7 @@ class AiAudio {
       try {
         const fn = await getVendorTemplateFn("ttsRequest", mn);
         await referenceList2imageBase642(mn.split(/:(.+)/)[0], input);
-        this.result = await fn(input);
-
-        if (this.result.startsWith("http")) this.result = await urlToBase64(this.result);
+        this.result = await normalizeGeneratedMedia(await fn(input));
         return this;
       } catch (e) {}
     };

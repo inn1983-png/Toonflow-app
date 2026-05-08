@@ -92,10 +92,15 @@ export default async function startServe(randomPort: Boolean = false) {
   const webDir = u.getPath("web");
   if (fs.existsSync(webDir)) {
     console.log("静态网站目录:", webDir);
-    app.use(express.static(webDir, { acceptRanges: false }));
+    app.use('/web', express.static(webDir, { acceptRanges: false }));
   } else {
     console.warn("静态网站目录不存在:", webDir);
   }
+
+  // 根路径重定向到前端页面
+  app.get("/", (req, res) => {
+    res.redirect("/web/index.html");
+  });
 
   app.use(async (req, res, next) => {
     const setting = await u.db("o_setting").where("key", "tokenKey").select("value").first();

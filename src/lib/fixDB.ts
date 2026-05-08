@@ -56,6 +56,10 @@ export default async (knex: Knex): Promise<void> => {
     state: "生成失败",
     errorReason: "软件退出导致失败",
   });
+  await db("o_tasks").where("state", "进行中").update({
+    state: "生成失败",
+    reason: "软件退出导致失败",
+  });
 
   // 添加新字段
   await addColumn("o_prompt", "useData", "text");

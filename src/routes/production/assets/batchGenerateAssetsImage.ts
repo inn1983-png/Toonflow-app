@@ -5,6 +5,7 @@ import sharp from "sharp";
 import { success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 import { Output } from "ai";
+import { isDeriveImageModel, resolveImageModelForAsset } from "@/utils/assetImageModel";
 const router = express.Router();
 
 export default router.post(
@@ -51,15 +52,23 @@ export default router.post(
         prompt: scenePrompt,
       },
     };
+    const imageModelMap: Record<number, string> = {};
+    await Promise.all(
+      assetsDataArr.map(async (item: any) => {
+        imageModelMap[item.id!] = await resolveImageModelForAsset(projectSettingData?.imageModel, item);
+      }),
+    );
+
     // 先批量为所有 assets 创建 image 记录并标记为"生成中"
     const imageIdMap: Record<number, number> = {};
     for (const item of assetsDataArr) {
+      const imageModel = imageModelMap[item.id!] || projectSettingData?.imageModel;
       const [imageId] = await u.db("o_image").insert({
         assetsId: item.id,
         type: item.type,
         state: "生成中",
         resolution: projectSettingData?.imageQuality,
-        model: projectSettingData?.imageModel,
+        model: imageModel,
       });
       imageIdMap[item.id!] = imageId;
       await u.db("o_assets").where("id", item.id).update({ imageId: imageId });
@@ -69,43 +78,47 @@ export default router.post(
     res.status(200).send(success("开始生成资产图片"));
     const generateSingleAsset = async (item: any) => {
       const imageId = imageIdMap[item.id!];
+      const imageModel = (imageModelMap[item.id!] || projectSettingData?.imageModel) as `${string}:${string}`;
       const typeConfig = promptRecord[item.type!] || promptRecord["role"];
-
-      const { text } = await u.Ai.Text("universalAi").invoke({
-        system: `${typeConfig.prompt}`,
-        messages: [
-          {
-            role: "user",
-            content: `
-            父级资产描述: ${item.parentDescribe || "无详细描述"}
-            当前资产描述: ${item.describe || "无详细描述"}`,
-          },
-        ],
-      });
+      try {
+        const { text } = await u.Ai.Text("universalAi").invoke({
+          system: `${typeConfig.prompt}`,
+          messages: [
+            {
+              role: "user",
+              content: `
+              父级资产描述: ${item.parentDescribe || "无详细描述"}
+              当前资产描述: ${item.describe || "无详细描述"}`,
+            },
+          ],
+        });
         await u.db("o_assets").where("id", item.id).update({ prompt: text });
 
-      const imageBase64 = imageUrlRecord[item.assetsId!] ? await u.oss.getImageBase64(imageUrlRecord[item.assetsId!]) : null;
-      try {
+        const imageBase64 = imageUrlRecord[item.assetsId!] ? await u.oss.getImageBase64(imageUrlRecord[item.assetsId!]) : null;
+        if (isDeriveImageModel(imageModel) && !imageBase64) {
+          throw new Error("衍生资产图需要父资产已完成图片作为参考图，请先生成父资产图片。");
+        }
+
         const repeloadObj = {
           prompt: text,
           size: projectSettingData?.imageQuality as "1K" | "2K" | "4K",
           aspectRatio: "16:9" as `${number}:${number}`,
         };
-        const imageCls = await u.Ai.Image(projectSettingData?.imageModel as `${string}:${string}`).run(
+        const imageCls = await u.Ai.Image(imageModel).run(
           {
             referenceList: imageBase64 ? [{ type: "image", base64: imageBase64 }] : [],
             ...repeloadObj,
           },
           {
             taskClass: "生成图片",
-            describe: "资产图片生成",
-            relatedObjects: JSON.stringify(repeloadObj),
+            describe: item.assetsId ? "衍生资产图片生成" : "资产图片生成",
+            relatedObjects: JSON.stringify({ ...repeloadObj, assetId: item.id, parentAssetId: item.assetsId ?? null }),
             projectId: projectId,
           },
         );
         const savePath = `/${projectId}/assets/${scriptId}/${item.type}/${u.uuid()}.jpg`;
         await imageCls.save(savePath);
-        await u.db("o_image").where({ id: imageId }).update({ state: "已完成", filePath: savePath });
+        await u.db("o_image").where({ id: imageId }).update({ state: "已完成", filePath: savePath, model: imageModel });
         return {
           id: item.id!,
           state: "已完成",

@@ -6,8 +6,16 @@ import { error, success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 import { Output, tool } from "ai";
 import { assetItemSchema } from "@/agents/productionAgent/tools";
+import { resolveImageModelForStoryboard } from "@/utils/assetImageModel";
 const router = express.Router();
 export type AssetData = z.infer<typeof assetItemSchema>;
+
+type StoryboardAssetReference = {
+  assetId: number;
+  imageId: number;
+  assetType?: string | null;
+  assetName?: string | null;
+};
 
 export default router.post(
   "/",
@@ -47,6 +55,7 @@ export default router.post(
     }
 
     const projectSettingData = await u.db("o_project").where("id", projectId).select("imageModel", "imageQuality", "artStyle", "videoRatio").first();
+    const storyboardImageModel = (await resolveImageModelForStoryboard(projectSettingData?.imageModel)) as `${string}:${string}`;
 
     // 按 rowid 顺序查出每个 storyboard 关联的 assetId 有序列表
     const assets2StoryboardRows = await u
@@ -57,23 +66,35 @@ export default router.post(
 
     // 收集所有 assetId，批量查对应的 imageId
     const allAssetIds = [...new Set(assets2StoryboardRows.map((r: any) => r.assetId))];
-    const assetImageMap: Record<number, number> = {};
+    const assetImageMap: Record<number, StoryboardAssetReference> = {};
     if (allAssetIds.length > 0) {
-      const assetRows = await u.db("o_assets").whereIn("id", allAssetIds).select("id", "imageId");
+      const assetRows = await u.db("o_assets").whereIn("id", allAssetIds).select("id", "imageId", "type", "name");
       assetRows.forEach((row: any) => {
-        assetImageMap[row.id] = row.imageId;
+        if (row.imageId != null) {
+          assetImageMap[row.id] = {
+            assetId: row.id,
+            imageId: row.imageId,
+            assetType: row.type,
+            assetName: row.name,
+          };
+        }
       });
     }
 
     // 按 rowid 顺序重建 assetRecord，值为有序的 imageId 列表
     const assetRecord: Record<number, number[]> = {};
+    const assetReferenceRecord: Record<number, StoryboardAssetReference[]> = {};
     assets2StoryboardRows.forEach((item: any) => {
       if (!assetRecord[item.storyboardId]) {
         assetRecord[item.storyboardId] = [];
       }
-      const imageId = assetImageMap[item.assetId];
-      if (imageId != null) {
-        assetRecord[item.storyboardId].push(imageId);
+      if (!assetReferenceRecord[item.storyboardId]) {
+        assetReferenceRecord[item.storyboardId] = [];
+      }
+      const assetReference = assetImageMap[item.assetId];
+      if (assetReference) {
+        assetRecord[item.storyboardId].push(assetReference.imageId);
+        assetReferenceRecord[item.storyboardId].push(assetReference);
       }
     });
     const realStoryData = await u.db("o_storyboard").where("scriptId", scriptId).where("projectId", projectId).whereIn("id", storyIds);
@@ -98,9 +119,9 @@ export default router.post(
         aspectRatio: projectSettingData?.videoRatio as `${number}:${number}`,
       };
       try {
-        const imageCls = await u.Ai.Image(projectSettingData?.imageModel as `${string}:${string}`).run(
+        const imageCls = await u.Ai.Image(storyboardImageModel).run(
           {
-            referenceList: await getAssetsImageBase64(assetRecord[item.id!] || []),
+            referenceList: await getAssetsImageBase64(assetReferenceRecord[item.id!] || []),
             ...repeloadObj,
           },
           {
@@ -139,9 +160,10 @@ export default router.post(
     }
   },
 );
-async function getAssetsImageBase64(imageIds: number[]) {
-  if (!imageIds.length) return [];
+async function getAssetsImageBase64(assetReferences: StoryboardAssetReference[]) {
+  if (!assetReferences.length) return [];
 
+  const imageIds = assetReferences.map((item) => item.imageId);
   const imagePaths = await u.db("o_image").whereIn("o_image.id", imageIds).select("o_image.id", "o_image.filePath");
 
   // 建立 id 到 filePath 的映射
@@ -152,11 +174,17 @@ async function getAssetsImageBase64(imageIds: number[]) {
 
   // 保证输出顺序与 imageIds 一致
   const imageUrls = await Promise.all(
-    imageIds.map(async (id) => {
-      const filePath = id2Path.get(id);
+    assetReferences.map(async (item) => {
+      const filePath = id2Path.get(item.imageId);
       if (filePath) {
         try {
-          return await u.oss.getImageBase64(filePath);
+          return {
+            type: "image" as const,
+            base64: await u.oss.getImageBase64(filePath),
+            assetId: item.assetId,
+            assetType: item.assetType,
+            assetName: item.assetName,
+          };
         } catch {
           return null;
         }
@@ -165,5 +193,5 @@ async function getAssetsImageBase64(imageIds: number[]) {
     }),
   );
   // 保留顺序，并且过滤掉无效项
-  return (imageUrls.filter(Boolean) as string[]).map((url) => ({ type: "image" as const, base64: url }));
+  return imageUrls.filter((item): item is NonNullable<(typeof imageUrls)[number]> => Boolean(item));
 }

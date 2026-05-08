@@ -38,6 +38,11 @@ exports.vendor = {
     { key: "imageNegativeNodeId", label: "图片负向提示词节点 ID", type: "text", required: false, placeholder: "7" },
     { key: "imageLoadNodeIds", label: "图片参考图 LoadImage 节点 ID，逗号分隔", type: "text", required: false, placeholder: "21,22,23,24" },
 
+    { key: "storyboardPromptNodeId", label: "分镜正向提示词节点 ID", type: "text", required: false, placeholder: "205" },
+    { key: "storyboardNegativeNodeId", label: "分镜负向提示词节点 ID", type: "text", required: false, placeholder: "16" },
+    { key: "storyboardSceneNodeId", label: "分镜场景 LoadImage 节点 ID", type: "text", required: false, placeholder: "20" },
+    { key: "storyboardReferenceNodeIds", label: "分镜角色/道具 LoadImage 节点 ID，逗号分隔", type: "text", required: false, placeholder: "21,22,23" },
+
     { key: "deriveImageNodeId", label: "衍生图输入图 LoadImage 节点 ID", type: "text", required: false, placeholder: "78" },
     { key: "derivePromptNodeId", label: "衍生图正向提示词节点 ID", type: "text", required: false, placeholder: "102:76" },
     { key: "deriveNegativeNodeId", label: "衍生图负向提示词节点 ID", type: "text", required: false, placeholder: "102:77" },
@@ -52,6 +57,7 @@ exports.vendor = {
     { key: "defaultImageNegative", label: "默认图片负向提示词", type: "text", required: false, placeholder: "no text, no watermark..." },
     { key: "defaultVideoNegative", label: "默认视频负向提示词", type: "text", required: false, placeholder: "no subtitles, no morphing..." },
     { key: "filenamePrefix", label: "ComfyUI 输出文件名前缀", type: "text", required: false, placeholder: "Toonflow/comfyui" },
+    { key: "requestTimeoutMs", label: "请求超时毫秒", type: "text", required: false, placeholder: "60000" },
     { key: "pollIntervalMs", label: "轮询间隔毫秒", type: "text", required: false, placeholder: "1500" },
     { key: "timeoutMs", label: "超时时间毫秒", type: "text", required: false, placeholder: "3600000" },
   ],
@@ -66,6 +72,10 @@ exports.vendor = {
     imagePromptNodeId: "6",
     imageNegativeNodeId: "7",
     imageLoadNodeIds: "",
+    storyboardPromptNodeId: "205",
+    storyboardNegativeNodeId: "16",
+    storyboardSceneNodeId: "20",
+    storyboardReferenceNodeIds: "21,22,23",
     deriveImageNodeId: "78",
     derivePromptNodeId: "102:76",
     deriveNegativeNodeId: "102:77",
@@ -80,6 +90,7 @@ exports.vendor = {
     defaultVideoNegative:
       "pc game, console game, video game, cartoon, childish, subtitles, captions, written text, watermark, logo, modern objects, western face, extra people, identity change, face change, clothing change, scene change, melting, morphing, blurry, low quality",
     filenamePrefix: "Toonflow/comfyui",
+    requestTimeoutMs: "60000",
     pollIntervalMs: "1500",
     timeoutMs: "3600000",
   },
@@ -108,6 +119,10 @@ function getInputValue(key, fallback) {
 
 function cleanBaseUrl() {
   return String(getInputValue("baseUrl", "http://127.0.0.1:8188")).replace(/\/$/, "");
+}
+
+function requestTimeoutMs() {
+  return Number(getInputValue("requestTimeoutMs", "60000")) || 60000;
 }
 
 function parseNodeIds(value) {
@@ -217,21 +232,20 @@ function buildMultipartBody(boundary, fields) {
 
 async function uploadImage(base64, prefix) {
   const { ext, mime } = imageMime(base64);
-  const bytes = base64ToUint8Array(stripBase64Prefix(base64));
-  if (!bytes.length) throw new Error("参考图为空，无法上传到 ComfyUI");
+  const buffer = Buffer.from(stripBase64Prefix(base64), "base64");
+  if (!buffer.length) throw new Error("参考图为空，无法上传到 ComfyUI");
 
   const filename = `${prefix || "toonflow_ref"}_${Date.now()}_${Math.random().toString(16).slice(2)}.${ext}`;
-  const boundary = `----toonflow-comfyui-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const body = buildMultipartBody(boundary, [
-    { name: "image", filename, contentType: mime, value: bytes },
-    { name: "type", value: "input" },
-    { name: "overwrite", value: "true" },
-  ]);
+  const form = new FormData();
+  form.append("image", buffer, { filename, contentType: mime });
+  form.append("type", "input");
+  form.append("overwrite", "true");
 
-  const res = await axios.post(`${cleanBaseUrl()}/upload/image`, body, {
-    headers: { "Content-Type": `multipart/form-data; boundary=${boundary}` },
+  const res = await axios.post(`${cleanBaseUrl()}/upload/image`, form, {
+    headers: form.getHeaders(),
     maxBodyLength: Infinity,
     maxContentLength: Infinity,
+    timeout: requestTimeoutMs(),
   });
 
   if (!res.data || !res.data.name) throw new Error(`ComfyUI 上传图片失败：${JSON.stringify(res.data || {})}`);
@@ -302,6 +316,21 @@ function setUiWidget(workflow, nodeId, inputName, value) {
   if (Array.isArray(node.widgets_values)) node.widgets_values[0] = value;
 }
 
+function getUiInputNames(workflow, nodeId) {
+  const node = getUiNode(workflow, nodeId);
+  return node ? (node.inputs || []).map((input) => input && input.name).filter(Boolean) : [];
+}
+
+function getApiInputNames(workflow, nodeId) {
+  const node = workflow[String(nodeId)];
+  return node && node.inputs ? Object.keys(node.inputs) : [];
+}
+
+function pickInputName(workflow, nodeId, candidates, fallback) {
+  const names = isUiWorkflow(workflow) ? getUiInputNames(workflow, nodeId) : getApiInputNames(workflow, nodeId);
+  return candidates.find((name) => names.includes(name)) || fallback;
+}
+
 function setApiInput(workflow, nodeId, inputName, value) {
   const node = workflow[String(nodeId)];
   if (!node) return;
@@ -311,8 +340,9 @@ function setApiInput(workflow, nodeId, inputName, value) {
 
 function patchText(workflow, nodeId, value) {
   if (!nodeId) return;
-  if (isUiWorkflow(workflow)) setUiWidget(workflow, nodeId, "text", value);
-  else setApiInput(workflow, nodeId, "text", value);
+  const inputName = pickInputName(workflow, nodeId, ["text", "prompt"], "text");
+  if (isUiWorkflow(workflow)) setUiWidget(workflow, nodeId, inputName, value);
+  else setApiInput(workflow, nodeId, inputName, value);
 }
 
 function patchImage(workflow, nodeId, filename) {
@@ -333,7 +363,7 @@ function workflowToApi(workflow) {
 
 async function queuePrompt(apiWorkflow) {
   const clientId = `toonflow_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-  const res = await axios.post(`${cleanBaseUrl()}/prompt`, { prompt: apiWorkflow, client_id: clientId });
+  const res = await axios.post(`${cleanBaseUrl()}/prompt`, { prompt: apiWorkflow, client_id: clientId }, { timeout: requestTimeoutMs() });
   if (!res.data || !res.data.prompt_id) throw new Error(`ComfyUI 提交任务失败：${JSON.stringify(res.data || {})}`);
   return res.data.prompt_id;
 }
@@ -343,7 +373,7 @@ async function waitHistory(promptId) {
   const timeout = Number(getInputValue("timeoutMs", "3600000")) || 3600000;
   const result = await pollTask(
     async () => {
-      const res = await axios.get(`${cleanBaseUrl()}/history/${promptId}`);
+      const res = await axios.get(`${cleanBaseUrl()}/history/${promptId}`, { timeout: requestTimeoutMs() });
       const data = res.data && res.data[promptId];
       if (!data) return { completed: false };
       if (data.status && (data.status.status_str === "error" || (data.status.completed === false && data.status.messages))) {
@@ -419,6 +449,48 @@ function buildImagePrompt(input, modelName) {
   return ["分镜图。严格依据剧情生成可用于四宫格视频的连续关键帧画面，古风写实电视剧质感，人物身份稳定。", aspect, base].filter(Boolean).join("\n");
 }
 
+function getReferenceAssetType(reference) {
+  const value = String((reference && (reference.assetType || reference.asset_type || reference.category)) || "").toLowerCase();
+  if (value === "prop") return "tool";
+  return value;
+}
+
+function findSceneReference(references) {
+  return references.find((reference) => getReferenceAssetType(reference) === "scene") || references[0];
+}
+
+function getStoryboardSlotReferences(references) {
+  const nonSceneReferences = references.filter((reference) => getReferenceAssetType(reference) !== "scene");
+  return nonSceneReferences.length ? nonSceneReferences : references;
+}
+
+async function patchStoryboardReferenceImages(workflow, references, modelName) {
+  if (!references.length) throw new Error("分镜图工作流需要至少 1 张参考图。");
+
+  const uploaded = new Map();
+  const uploadReference = async (reference, prefix) => {
+    const cacheKey = reference.base64;
+    if (!uploaded.has(cacheKey)) {
+      uploaded.set(cacheKey, await uploadImage(reference.base64, prefix));
+    }
+    return uploaded.get(cacheKey);
+  };
+
+  const sceneReference = findSceneReference(references);
+  const sceneImageName = await uploadReference(sceneReference, `toonflow_${modelName}_scene`);
+  patchImage(workflow, getInputValue("storyboardSceneNodeId", "20"), sceneImageName);
+
+  const referenceNodeIds = parseNodeIds(getInputValue("storyboardReferenceNodeIds", "21,22,23"));
+  const slotReferences = getStoryboardSlotReferences(references);
+  let lastReference = slotReferences[0];
+  for (let i = 0; i < referenceNodeIds.length; i++) {
+    const reference = slotReferences[i] || lastReference;
+    lastReference = reference;
+    const imageName = await uploadReference(reference, `toonflow_${modelName}_ref`);
+    patchImage(workflow, referenceNodeIds[i], imageName);
+  }
+}
+
 exports.imageRequest = async function imageRequest(input, model) {
   const modelName = model.modelName;
   const workflowKey = workflowKeyForModel(modelName);
@@ -435,12 +507,18 @@ exports.imageRequest = async function imageRequest(input, model) {
   } else {
     const prompt = buildImagePrompt(input, modelName);
     const negative = getInputValue("defaultImageNegative", "");
-    patchText(working, getInputValue("imagePromptNodeId", "6"), prompt);
-    patchText(working, getInputValue("imageNegativeNodeId", "7"), negative);
-    const loadNodeIds = parseNodeIds(getInputValue("imageLoadNodeIds", ""));
-    for (let i = 0; i < references.length && i < loadNodeIds.length; i++) {
-      const name = await uploadImage(references[i].base64, `toonflow_${modelName}_ref`);
-      patchImage(working, loadNodeIds[i], name);
+    if (modelName === "comfyui-storyboard-image") {
+      patchText(working, getInputValue("storyboardPromptNodeId", "205"), prompt);
+      patchText(working, getInputValue("storyboardNegativeNodeId", "16"), negative);
+      await patchStoryboardReferenceImages(working, references, modelName);
+    } else {
+      patchText(working, getInputValue("imagePromptNodeId", "6"), prompt);
+      patchText(working, getInputValue("imageNegativeNodeId", "7"), negative);
+      const loadNodeIds = parseNodeIds(getInputValue("imageLoadNodeIds", ""));
+      for (let i = 0; i < references.length && i < loadNodeIds.length; i++) {
+        const name = await uploadImage(references[i].base64, `toonflow_${modelName}_ref`);
+        patchImage(working, loadNodeIds[i], name);
+      }
     }
   }
 

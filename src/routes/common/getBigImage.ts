@@ -13,9 +13,6 @@ export default router.post(
   }),
   async (req, res) => {
     let { url } = req.body;
-    if (url.startsWith("/oss/")) {
-      url = u.replaceUrl(url).replace("/smallImage", "");
-    }
     const bigImageUrl = await u.oss.getFileUrl(u.replaceUrl(url));
     res.status(200).send(success(bigImageUrl));
   },
